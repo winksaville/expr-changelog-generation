@@ -1,5 +1,5 @@
-use git2::{Commit, Oid, Repository};
 use chrono::{NaiveDateTime, Utc};
+use git2::{Commit, Oid, Repository};
 use std::collections::HashMap;
 
 fn get_tags(repo: &Repository) -> HashMap<Oid, String> {
@@ -21,7 +21,9 @@ fn get_tags(repo: &Repository) -> HashMap<Oid, String> {
 fn get_commits(repo: &Repository) -> Vec<Commit> {
     let mut revwalk = repo.revwalk().expect("Failed to create revwalk");
     revwalk.push_head().expect("Failed to push HEAD");
-    revwalk.set_sorting(git2::Sort::TIME);
+    if let Err(e) = revwalk.set_sorting(git2::Sort::TIME) {
+        eprintln!("Failed to set sorting: {}", e);
+    }
 
     revwalk
         .filter_map(|oid| oid.ok().and_then(|oid| repo.find_commit(oid).ok()))
@@ -35,9 +37,8 @@ fn format_commit(commit: &Commit) -> String {
 }
 
 fn format_date(timestamp: i64) -> String {
-    let naive = NaiveDateTime::from_timestamp_opt(timestamp, 0).unwrap();
-    let date = naive.date();
-    date.format("%Y-%m-%d").to_string()
+    let naive = NaiveDateTime::from_timestamp_opt(timestamp, 0).expect("Invalid timestamp");
+    naive.date().format("%Y-%m-%d").to_string()
 }
 
 fn main() {
@@ -46,7 +47,7 @@ fn main() {
     let commits = get_commits(&repo);
 
     let mut output = String::new();
-    let mut current_tag = "[unreleased]".to_string();
+    let mut current_tag = None;
     let mut first_tag_shown = false;
 
     for commit in commits {
@@ -56,10 +57,14 @@ fn main() {
             if first_tag_shown {
                 output.push('\n');
             }
-            current_tag = format!("[{}]", tag);
+            current_tag = Some(format!("[{}]", tag));
             let date = format_date(commit.time().seconds());
-            output.push_str(&format!("{} - {}\n", current_tag, date));
+            output.push_str(&format!("{} - {}\n", current_tag.as_ref().unwrap(), date));
             first_tag_shown = true;
+        } else if current_tag.is_none() {
+            current_tag = Some("[unreleased]".to_string());
+            let date = format_date(commit.time().seconds());
+            output.push_str(&format!("{} - {}\n", current_tag.as_ref().unwrap(), date));
         }
 
         output.push_str(&format!("{}\n", format_commit(&commit)));
