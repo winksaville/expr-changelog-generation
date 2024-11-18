@@ -1,4 +1,4 @@
-use chrono::{NaiveDateTime, Utc};
+use chrono::DateTime;
 use git2::{Commit, Oid, Repository};
 use std::collections::HashMap;
 
@@ -37,8 +37,8 @@ fn format_commit(commit: &Commit) -> String {
 }
 
 fn format_date(timestamp: i64) -> String {
-    let naive = NaiveDateTime::from_timestamp_opt(timestamp, 0).expect("Invalid timestamp");
-    naive.date().format("%Y-%m-%d").to_string()
+    let naive = DateTime::from_timestamp(timestamp, 0).expect("Invalid timestamp");
+    naive.date_naive().format("%Y-%m-%d").to_string()
 }
 
 fn main() {

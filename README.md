@@ -61,6 +61,48 @@ warning: `expr-changelog-generation` (bin "expr-changelog-generation") generated
 wink@3900x 24-11-18T22:46:05.351Z:~/prgs/rust/myrepos/expr-changelog-generation (main)
 ```
 
+The fixed helped:
+```
+wink@3900x 24-11-18T23:08:54.033Z:~/prgs/rust/myrepos/expr-changelog-generation (main)
+$ cargo build
+   Compiling expr-changelog-generation v0.1.0 (/home/wink/prgs/rust/myrepos/expr-changelog-generation)
+warning: unused import: `Utc`
+ --> src/main.rs:1:29
+  |
+1 | use chrono::{NaiveDateTime, Utc};
+  |                             ^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: use of deprecated associated function `chrono::NaiveDateTime::from_timestamp_opt`: use `DateTime::from_timestamp` instead
+  --> src/main.rs:40:32
+   |
+40 |     let naive = NaiveDateTime::from_timestamp_opt(timestamp, 0).expect("Invalid timestamp");
+   |                                ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: `expr-changelog-generation` (bin "expr-changelog-generation") generated 2 warnings (run `cargo fix --bin "expr-changelog-generation"` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.50s
+wink@3900x 24-11-18T23:09:00.678Z:~/prgs/rust/myrepos/expr-changelog-generation (main)
+```
+
+Fixing using changes suggested by compiler and it now builds and runs:
+```
+wink@3900x 24-11-18T23:12:54.822Z:~/prgs/rust/myrepos/expr-changelog-generation (main)
+$ cargo build
+   Compiling expr-changelog-generation v0.1.0 (/home/wink/prgs/rust/myrepos/expr-changelog-generation)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.51s
+wink@3900x 24-11-18T23:13:10.950Z:~/prgs/rust/myrepos/expr-changelog-generation (main)
+$ cargo run
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running `target/debug/expr-changelog-generation`
+[unreleased] - 2024-11-18
+- chore: ChatGPT4o attempt to fix errors
+- feat: Initial Commit
+
+wink@3900x 24-11-18T23:15:03.348Z:~/prgs/rust/myrepos/expr-changelog-generation (main)
+```
 
 ## License
 
