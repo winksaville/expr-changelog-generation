@@ -104,6 +104,21 @@ $ cargo run
 wink@3900x 24-11-18T23:15:03.348Z:~/prgs/rust/myrepos/expr-changelog-generation (main)
 ```
 
+So I commit and tag this and we've got v0.1.0 complete:
+```
+wink@3900x 24-11-18T23:24:18.182Z:~/prgs/rust/myrepos/expr-changelog-generation (main)
+$ cargo run
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running `target/debug/expr-changelog-generation`
+[v0.1.0] - 2024-11-18
+- chore: Update README.md and set tag
+- chore: Builds and run after making compiler suggested changes
+- chore: ChatGPT4o attempt to fix errors
+- feat: Initial Commit
+
+wink@3900x 24-11-18T23:24:23.925Z:~/prgs/rust/myrepos/expr-changelog-generation (main)
+```
+
 ## License
 
 Licensed under either of
