@@ -1,7 +1,12 @@
 use chrono::DateTime;
 use git2::{Commit, Oid, Repository};
 use octocrab::{models::pulls::PullRequest, Octocrab};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    env::args,
+    io,
+    path::{Path, PathBuf},
+};
 
 fn get_tags(repo: &Repository) -> HashMap<Oid, String> {
     repo.references()
@@ -38,7 +43,7 @@ fn format_date(timestamp: i64) -> String {
 
 fn description(input: &str) -> &str {
     if input.is_empty() {
-        return "<No description>";
+        "<No description>"
     } else {
         match input.find('\n') {
             Some(pos) => &input[..pos],
@@ -103,9 +108,9 @@ async fn process_commits(
         if commit.parent_count() > 1 {
             if let Some(octocrab) = &octocrab {
                 let merge_commit_sha = commit.id().to_string();
-                if let Some(pr) =
-                    fetch_pr_metadata(octocrab, repo_owner, repo_name, &merge_commit_sha).await
-                {
+                let pull_request =
+                    fetch_pr_metadata(octocrab, repo_owner, repo_name, &merge_commit_sha).await;
+                if let Some(pr) = pull_request {
                     let pr_url = pr.html_url.map(|url| url.to_string()).unwrap_or_default();
                     let pr_description = pr.title.unwrap_or_else(|| "No description".to_string());
                     output.push_str(&format!(
@@ -120,26 +125,24 @@ async fn process_commits(
                         .await
                         .unwrap_or_default();
 
-                    // Reverse the pr_commits
+                    // Reverse the pr_commits so latest commits are at the top
                     let pr_commits: Vec<_> = pr_commits.into_iter().rev().collect();
 
-                    // Add the pr_commits to the skip_set and output
+                    // Output the PR commits
                     for pr_commit in pr_commits {
-                        // Since we're outputing then under PR add to skip_set
+                        // Add pr_commits to the skip_set so they are not repeated
                         skip_set.insert(pr_commit.sha.to_string());
 
-                        // Output nested under the PR
+                        // Add commit indented
                         let message = pr_commit.commit.message;
-                        output.push_str(&format!(
-                            "    - {}\n",
-                            description(message.as_str())
-                        ));
+                        output.push_str(&format!("    - {}\n", description(message.as_str())));
                     }
                 }
             }
         } else if skip_set.contains(oid.to_string().as_str()) {
             //println!("process_commits: skipping {}", oid);
         } else {
+            // Add the commit to the output
             let commit_str = format!("{}\n", format_commit(&commit));
             output.push_str(&commit_str);
         }
@@ -148,16 +151,59 @@ async fn process_commits(
     output
 }
 
+fn resolve_directory(input: &str) -> Result<PathBuf, io::Error> {
+    let path = Path::new(input);
+
+    // Resolve to an absolute path
+    let resolved_path = path.canonicalize()?;
+
+    // Check if it's a directory
+    if !resolved_path.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Path is not a directory",
+        ));
+    }
+
+    Ok(resolved_path)
+}
+
 #[tokio::main]
-async fn main() {
-    let repo = Repository::open(".").expect("Failed to open repository");
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Get command line args
+    let args: Vec<String> = args().collect();
+
+    // Check if we have the correct number of args
+    if args.len() < 3 {
+        eprintln!(
+            "Usage: {} <repo_directory> <repo_owner> {{repo_name}}",
+            args[0]
+        );
+        eprintln!("   repo_directory: the directory where the local repo resides");
+        eprintln!("   repo_owner: the github owner name");
+        eprintln!("   repo_name: Optional repo_name, if absent use file_name of repo_directory");
+        std::process::exit(1);
+    }
+
+    // Initialize args
+    let repo_directory = resolve_directory(&args[1]).unwrap();
+    let repo_owner = &args[2];
+    let repo_name = if args.len() == 4 {
+        &args[3]
+    } else {
+        // Get the filename of the repo_directory handling "." and ".."
+        repo_directory.file_name().unwrap().to_str().unwrap()
+    };
+
+    // Open the repository and get the tags
+    let repo = Repository::open(&repo_directory).expect("Failed to open repository");
     let tags = get_tags(&repo);
 
-    let repo_owner = "winksaville";
-    let repo_name = "vacation-hours-python";
-
+    // Initialize the Octocrab and process the commits returning the changelog
     let octocrab = Octocrab::builder().build().ok();
     let changelog = process_commits(&repo, tags, octocrab, repo_owner, repo_name).await;
 
     println!("{}", changelog);
+
+    Ok(())
 }
