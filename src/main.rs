@@ -36,6 +36,24 @@ fn get_commits(repo: &Repository) -> Vec<Commit> {
         .collect()
 }
 
+async fn get_pr_commits(
+    octocrab: &Octocrab,
+    repo_owner: &str,
+    repo_name: &str,
+    pr: &PullRequest,
+) -> Vec<octocrab::models::repos::RepoCommit> {
+    let pr_commits = octocrab
+        .pulls(repo_owner, repo_name)
+        .pr_commits(pr.number) // Only returns 250
+        .send()
+        .await
+        .unwrap_or_default();
+
+    // Reverse the pr_commits so latest commits are at the top
+    let pr_commits: Vec<_> = pr_commits.into_iter().rev().collect();
+    pr_commits
+}
+
 fn format_date(timestamp: i64) -> String {
     let naive = DateTime::from_timestamp(timestamp, 0).expect("Invalid timestamp");
     naive.date_naive().format("%Y-%m-%d").to_string()
@@ -53,9 +71,10 @@ fn description(input: &str) -> &str {
 }
 
 fn format_commit(commit: &Commit) -> String {
+    let author = commit.author().name().unwrap_or("Unknown").to_string();
     let message = commit.message().unwrap_or("No commit message");
     let description = description(message);
-    format!("- {}", description)
+    format!("- {} @{author}", description)
 }
 
 async fn fetch_pr_metadata(
@@ -111,36 +130,81 @@ async fn process_commits(
                 let pull_request =
                     fetch_pr_metadata(octocrab, repo_owner, repo_name, &merge_commit_sha).await;
                 if let Some(pr) = pull_request {
-                    let pr_url = pr.html_url.map(|url| url.to_string()).unwrap_or_default();
-                    let pr_description = pr.title.unwrap_or_else(|| "No description".to_string());
-                    output.push_str(&format!(
-                        "- PR [#{}]({}) {}\n",
-                        pr.number, pr_url, pr_description
-                    ));
+                    let pr_commits = get_pr_commits(octocrab, repo_owner, repo_name, &pr).await;
 
-                    let pr_commits = octocrab
-                        .pulls(repo_owner, repo_name)
-                        .pr_commits(pr.number) // Only returns 250
-                        .send()
-                        .await
-                        .unwrap_or_default();
+                    match pr_commits.len() {
+                        0 => {
+                            // Add the PR to the output
+                            eprintln!("process_commits: ODD no commits for PR {}", pr.number);
 
-                    // Reverse the pr_commits so latest commits are at the top
-                    let pr_commits: Vec<_> = pr_commits.into_iter().rev().collect();
+                            let pr_url = pr.html_url.map(|url| url.to_string()).unwrap_or_default();
+                            let pr_description =
+                                pr.title.unwrap_or_else(|| "No description".to_string());
+                            output.push_str(&format!(
+                                "- 0 PR [#{}]({}) {}\n",
+                                pr.number, pr_url, pr_description
+                            ));
+                        }
+                        1 => {
+                            // Add the PR to the output
+                            let a_pr_commit = &pr_commits[0];
+                            let pr_number = pr.number;
+                            let message = a_pr_commit.commit.message.clone();
+                            let description = description(message.as_str());
+                            // Convert to author string or empty string
+                            let author: String = a_pr_commit
+                                .author
+                                .clone()
+                                .map_or("".to_string(), |a| " @".to_string() + a.login.as_str());
+                            let pr_url = pr.html_url.map(|url| url.to_string()).unwrap_or_default();
+                            output.push_str(&format!(
+                                "- {description}{author} [#{pr_number}]({pr_url})\n",
+                            ));
+                            skip_set.insert(a_pr_commit.sha.to_string());
+                        }
+                        _ => {
+                            let pr_url = pr.html_url.map(|url| url.to_string()).unwrap_or_default();
+                            let pr_number = pr.number;
+                            let pr_description =
+                                pr.title.unwrap_or_else(|| "No description".to_string());
+                            let pr_committer = pr.user.map(|user| user.login).unwrap_or_default();
+                            output.push_str(&format!(
+                                "- PR {pr_description} @{pr_committer} [#{pr_number}]({pr_url})\n",
+                            ));
 
-                    // Output the PR commits
-                    for pr_commit in pr_commits {
-                        // Add pr_commits to the skip_set so they are not repeated
-                        skip_set.insert(pr_commit.sha.to_string());
+                            // Output the PR commits
+                            for a_pr_commit in pr_commits {
+                                // Add pr_commits to the skip_set so they are not repeated
+                                let a_pr_commit_sha = a_pr_commit.sha.clone();
+                                skip_set.insert(a_pr_commit_sha.clone());
 
-                        // Add commit indented
-                        let message = pr_commit.commit.message;
-                        output.push_str(&format!("    - {}\n", description(message.as_str())));
+                                // Fetch the PR metadata
+                                let result = fetch_pr_metadata(
+                                    octocrab,
+                                    repo_owner,
+                                    repo_name,
+                                    &a_pr_commit_sha,
+                                )
+                                .await;
+                                let author = result.map_or("".to_string(), |pr| {
+                                    " @".to_string()
+                                        + &pr.user.map_or("".to_string(), |user| user.login)
+                                });
+
+                                // Add commit indented
+                                let message = a_pr_commit.commit.message;
+                                //let author = a_pr_commit.author.map_or("".to_string(), |a| " @".to_string() + a.login.as_str());
+                                output.push_str(&format!(
+                                    "    - {}{author}\n",
+                                    description(message.as_str())
+                                ));
+                            }
+                        }
                     }
                 }
             }
         } else if skip_set.contains(oid.to_string().as_str()) {
-            //println!("process_commits: skipping {}", oid);
+            println!("process_commits: skipping {}", oid);
         } else {
             // Add the commit to the output
             let commit_str = format!("{}\n", format_commit(&commit));
