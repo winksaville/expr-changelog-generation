@@ -1,6 +1,9 @@
 use chrono::DateTime;
 use git2::{Commit, Oid, Repository};
-use octocrab::{models::pulls::PullRequest, Octocrab};
+use octocrab::{
+    models::{pulls::PullRequest, repos::RepoCommit},
+    Octocrab,
+};
 use std::{
     collections::{HashMap, HashSet},
     env::args,
@@ -41,7 +44,7 @@ async fn get_pr_commits(
     repo_owner: &str,
     repo_name: &str,
     pr: &PullRequest,
-) -> Vec<octocrab::models::repos::RepoCommit> {
+) -> Vec<RepoCommit> {
     let pr_commits = octocrab
         .pulls(repo_owner, repo_name)
         .pr_commits(pr.number) // Only returns 250
@@ -74,7 +77,7 @@ fn format_commit(commit: &Commit) -> String {
     let author = commit.author().name().unwrap_or("Unknown").to_string();
     let message = commit.message().unwrap_or("No commit message");
     let description = description(message);
-    format!("- {} @{author}", description)
+    format!("- {description} @{author}")
 }
 
 async fn fetch_pr_metadata(
@@ -94,6 +97,31 @@ async fn fetch_pr_metadata(
         .next()
 }
 
+async fn get_author(
+    author_map: &mut HashMap<String, String>,
+    repo_commit: &RepoCommit,
+    octocrab: &Octocrab,
+    repo_owner: &str,
+    repo_name: &str,
+    merge_commit_sha: &str,
+) -> String {
+    let result = fetch_pr_metadata(octocrab, repo_owner, repo_name, merge_commit_sha).await;
+    let email = if let Some(commit_author) = repo_commit.commit.author.clone() {
+        commit_author.email
+    } else {
+        "".to_string()
+    };
+    let author = author_map.entry(email.clone()).or_insert_with(|| {
+        result.map_or("".to_string(), |pr| {
+            pr.user.map_or("".to_string(), |user| user.login)
+        })
+    });
+
+    println!("get_author: author: {author} email: {email}");
+
+    author.clone()
+}
+
 async fn process_commits(
     repo: &Repository,
     tags: HashMap<Oid, String>,
@@ -106,6 +134,8 @@ async fn process_commits(
     let mut first_tag_shown = false;
 
     let mut skip_set: HashSet<String> = HashSet::new();
+
+    let mut author_map: HashMap<String, String> = HashMap::new();
 
     for commit in get_commits(repo) {
         let oid = commit.id();
@@ -178,24 +208,20 @@ async fn process_commits(
                                 let a_pr_commit_sha = a_pr_commit.sha.clone();
                                 skip_set.insert(a_pr_commit_sha.clone());
 
-                                // Fetch the PR metadata
-                                let result = fetch_pr_metadata(
+                                let author = get_author(
+                                    &mut author_map,
+                                    &a_pr_commit,
                                     octocrab,
                                     repo_owner,
                                     repo_name,
                                     &a_pr_commit_sha,
                                 )
                                 .await;
-                                let author = result.map_or("".to_string(), |pr| {
-                                    " @".to_string()
-                                        + &pr.user.map_or("".to_string(), |user| user.login)
-                                });
 
                                 // Add commit indented
                                 let message = a_pr_commit.commit.message;
-                                //let author = a_pr_commit.author.map_or("".to_string(), |a| " @".to_string() + a.login.as_str());
                                 output.push_str(&format!(
-                                    "    - {}{author}\n",
+                                    "    - {} @{author}\n",
                                     description(message.as_str())
                                 ));
                             }
@@ -207,8 +233,22 @@ async fn process_commits(
             println!("process_commits: skipping {}", oid);
         } else {
             // Add the commit to the output
-            let commit_str = format!("{}\n", format_commit(&commit));
-            output.push_str(&commit_str);
+            if let Some(email) = commit.author().email() {
+                if let Some(author) = author_map.get(email) {
+                    output.push_str(&format!(
+                        "    - {} @{author}\n",
+                        description(commit.message().unwrap())));
+                } else {
+                    // TODO: Use get_author!!
+                    //println!("No author for commit.email(): {:?}", commit);
+                    let commit_str = format!("{}\n", format_commit(&commit));
+                    output.push_str(&commit_str);
+                };
+            } else {
+                // TODO: Use get_author!!
+                let commit_str = format!("{}\n", format_commit(&commit));
+                output.push_str(&commit_str);
+            };
         }
     }
 
