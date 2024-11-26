@@ -7,6 +7,7 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
+use custom_logger::env_logger_init;
 
 fn get_tags(repo: &Repository) -> HashMap<Oid, String> {
     repo.references()
@@ -170,6 +171,9 @@ fn resolve_directory(input: &str) -> Result<PathBuf, io::Error> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger_init("none"); // use `$ RUST_LOG=info cargo run . winksaville` to see some logging
+    log::info!("main:+");    // Get command line args
+
     // Get command line args
     let args: Vec<String> = args().collect();
 
@@ -205,5 +209,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}", changelog);
 
+    log::info!("main:-");    // Get command line args
     Ok(())
 }
