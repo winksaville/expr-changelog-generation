@@ -54,12 +54,6 @@ fn description(input: &str) -> &str {
     }
 }
 
-fn format_commit(commit: &Commit) -> String {
-    let message = commit.message().unwrap_or("No commit message");
-    let description = description(message);
-    format!("- {}", description)
-}
-
 async fn fetch_pr_metadata(
     octocrab: &Octocrab,
     repo_owner: &str,
@@ -77,10 +71,84 @@ async fn fetch_pr_metadata(
         .next()
 }
 
-fn get_author_html_url(_oc_repos_api: &GitHubReposAPI, repo_owner: &str, repo_name: &str) {
-    log::debug!("get_author_html_url:+ repo_owner: {repo_owner} repo_name: {repo_name}");
-    // TDOD: get commit author and html_url
-    log::debug!("get_author_html_url:-");
+#[derive(Debug)]
+struct CommitUsernameHtmlUrl {
+    login: String,
+    html_url: String,
+}
+
+impl CommitUsernameHtmlUrl {
+    fn new(login: &str, html_url: &str) -> Self {
+        Self {
+            login: login.to_string(),
+            html_url: html_url.to_string(),
+        }
+    }
+}
+
+async fn get_username_html_url(
+    oc_repos_api: &GitHubReposAPI,
+    repo_owner: &str,
+    repo_name: &str,
+    commit_sha: &str,
+) -> Option<CommitUsernameHtmlUrl> {
+    log::debug!("get_username_html_url:+ repo_owner: {repo_owner} repo_name: {repo_name}");
+    let result = oc_repos_api
+        .get_commit(repo_owner, repo_name, commit_sha)
+        .send()
+        .await;
+    let info: Option<CommitUsernameHtmlUrl> = match result {
+        Ok(commit) => {
+            if let Some(author) = commit.author {
+                log::debug!("commit.author.login: {:?}", author.login);
+                log::debug!("commit.author.html_url: {}", author.html_url);
+                Some(CommitUsernameHtmlUrl::new(
+                    author.login.as_str(),
+                    author.html_url.as_str(),
+                ))
+            } else {
+                log::debug!("commit.author: None");
+                None
+            }
+        }
+        Err(e) => {
+            log::error!("get_username_html_url: error: {e}");
+            None
+        }
+    };
+    log::debug!("get_username_html_url:- info: {:?}", info);
+    info
+}
+
+async fn format_commit<'a>(
+    commit: &'a Commit<'_>,
+    oc_repos_api: &'a GitHubReposAPI,
+    repo_owner: &'a str,
+    repo_name: &'a str,
+) -> String {
+    log::debug!("format_commit:+");
+
+    let oid = commit.id().to_string();
+    let oid_string = oid.to_string();
+    let message = commit.message().unwrap_or("No commit message");
+    let description = description(message);
+
+    let result = get_username_html_url(oc_repos_api, repo_owner, repo_name, &oid_string).await;
+    let commit_string = if let Some(commit_author) = result {
+        format!(
+            "- {description} @{} [{}]({}/{repo_name}/commit/{})\n",
+            commit_author.login,
+            &oid_string[..7],
+            commit_author.html_url,
+            oid_string
+        )
+    } else {
+        format!("{}\n", description)
+    };
+
+    log::debug!("format_commit:- commit_string: {commit_string}");
+
+    commit_string
 }
 
 async fn process_commits(
@@ -93,21 +161,18 @@ async fn process_commits(
 ) -> String {
     let mut output = String::new();
     let mut current_tag = None;
-    let mut first_tag_shown = false;
 
     let mut skip_set: HashSet<String> = HashSet::new();
 
     for commit in get_commits(repo) {
         let oid = commit.id();
+        let oid_string = oid.to_string();
 
         if let Some(tag) = tags.get(&oid) {
-            if first_tag_shown {
-                output.push('\n');
-            }
+            output.push('\n');
             current_tag = Some(format!("[{}]", tag));
             let date = format_date(commit.time().seconds());
             output.push_str(&format!("{} - {}\n", current_tag.as_ref().unwrap(), date));
-            first_tag_shown = true;
         } else if current_tag.is_none() {
             current_tag = Some("[unreleased]".to_string());
             let date = format_date(commit.time().seconds());
@@ -148,13 +213,11 @@ async fn process_commits(
                     }
                 }
             }
-        } else if skip_set.contains(oid.to_string().as_str()) {
+        } else if skip_set.contains(&oid_string) {
             //println!("process_commits: skipping {}", oid);
         } else {
-            // Add the commit to the output
-            get_author_html_url(oc_repos_api, repo_owner, repo_name);
-            let commit_str = format!("{}\n", format_commit(&commit));
-            output.push_str(&commit_str);
+            let commit_string = format_commit(&commit, oc_repos_api, repo_owner, repo_name).await;
+            output.push_str(&commit_string);
         }
     }
 
