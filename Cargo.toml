@@ -10,3 +10,4 @@ log = "0.4.22"
 custom_logger = { version = "0.3.0", git = "https://github.com/winksaville/custom_logger" }
 octocrab = "0.42.0"
 tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "time"] }
+octocrate = { version = "2.0.1", features = ["full"] }

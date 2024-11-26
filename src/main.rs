@@ -1,13 +1,14 @@
 use chrono::DateTime;
+use custom_logger::env_logger_init;
 use git2::{Commit, Oid, Repository};
 use octocrab::{models::pulls::PullRequest, Octocrab};
+use octocrate::{repos::GitHubReposAPI, APIConfig, PersonalAccessToken};
 use std::{
     collections::{HashMap, HashSet},
-    env::args,
+    env::{self, args},
     io,
     path::{Path, PathBuf},
 };
-use custom_logger::env_logger_init;
 
 fn get_tags(repo: &Repository) -> HashMap<Oid, String> {
     repo.references()
@@ -76,9 +77,16 @@ async fn fetch_pr_metadata(
         .next()
 }
 
+fn get_author_html_url(_oc_repos_api: &GitHubReposAPI, repo_owner: &str, repo_name: &str) {
+    log::debug!("get_author_html_url:+ repo_owner: {repo_owner} repo_name: {repo_name}");
+    // TDOD: get commit author and html_url
+    log::debug!("get_author_html_url:-");
+}
+
 async fn process_commits(
     repo: &Repository,
     tags: HashMap<Oid, String>,
+    oc_repos_api: &GitHubReposAPI,
     octocrab: Option<Octocrab>,
     repo_owner: &str,
     repo_name: &str,
@@ -144,6 +152,7 @@ async fn process_commits(
             //println!("process_commits: skipping {}", oid);
         } else {
             // Add the commit to the output
+            get_author_html_url(oc_repos_api, repo_owner, repo_name);
             let commit_str = format!("{}\n", format_commit(&commit));
             output.push_str(&commit_str);
         }
@@ -172,7 +181,7 @@ fn resolve_directory(input: &str) -> Result<PathBuf, io::Error> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger_init("none"); // use `$ RUST_LOG=info cargo run . winksaville` to see some logging
-    log::info!("main:+");    // Get command line args
+    log::info!("main:+"); // Get command line args
 
     // Get command line args
     let args: Vec<String> = args().collect();
@@ -203,12 +212,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let repo = Repository::open(&repo_directory).expect("Failed to open repository");
     let tags = get_tags(&repo);
 
+    // Initialize the Octocrate repo API
+    let pat_string = if let Ok(pat) = env::var("GITHUB_PERSONAL_ACCESS_TOKEN") {
+        pat
+    } else {
+        eprintln!("No GITHUB_PERSONAL_ACCESS_TOKEN");
+        std::process::exit(1);
+    };
+    let oc_personal_access_token = PersonalAccessToken::new(&pat_string);
+    let oc_config = APIConfig::with_token(oc_personal_access_token).shared();
+    let oc_repos_api = GitHubReposAPI::new(&oc_config);
+
     // Initialize the Octocrab and process the commits returning the changelog
     let octocrab = Octocrab::builder().build().ok();
-    let changelog = process_commits(&repo, tags, octocrab, repo_owner, repo_name).await;
+    let changelog =
+        process_commits(&repo, tags, &oc_repos_api, octocrab, repo_owner, repo_name).await;
 
     println!("{}", changelog);
 
-    log::info!("main:-");    // Get command line args
+    log::info!("main:-"); // Get command line args
     Ok(())
 }
