@@ -4,7 +4,7 @@ use git2::{Commit, Oid, Repository};
 use octocrab::{models::pulls::PullRequest, Octocrab};
 use octocrate::{repos::GitHubReposAPI, APIConfig, PersonalAccessToken};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     env::{self, args},
     io,
     path::{Path, PathBuf},
@@ -86,20 +86,20 @@ impl CommitUsernameHtmlUrl {
     }
 }
 
-async fn get_username_html_url(
-    oc_repos_api: &GitHubReposAPI,
-    repo_owner: &str,
-    repo_name: &str,
-    commit_sha: &str,
+async fn get_username_html_url<'a>(
+    commit: Commit<'a>,
+    oc_repos_api: &'a GitHubReposAPI,
+    repo_owner: &'a str,
+    repo_name: &'a str,
 ) -> Option<CommitUsernameHtmlUrl> {
     log::debug!("get_username_html_url:+ repo_owner: {repo_owner} repo_name: {repo_name}");
     let result = oc_repos_api
-        .get_commit(repo_owner, repo_name, commit_sha)
+        .get_commit(repo_owner, repo_name, commit.id().to_string())
         .send()
         .await;
     let info: Option<CommitUsernameHtmlUrl> = match result {
-        Ok(commit) => {
-            if let Some(author) = commit.author {
+        Ok(github_commit) => {
+            if let Some(author) = github_commit.author {
                 log::debug!("commit.author.login: {:?}", author.login);
                 log::debug!("commit.author.html_url: {}", author.html_url);
                 Some(CommitUsernameHtmlUrl::new(
@@ -121,6 +121,7 @@ async fn get_username_html_url(
 }
 
 async fn format_commit<'a>(
+    prepend_string: &str,
     commit: &'a Commit<'_>,
     oc_repos_api: &'a GitHubReposAPI,
     repo_owner: &'a str,
@@ -133,10 +134,12 @@ async fn format_commit<'a>(
     let message = commit.message().unwrap_or("No commit message");
     let description = description(message);
 
-    let result = get_username_html_url(oc_repos_api, repo_owner, repo_name, &oid_string).await;
+    let result =
+        get_username_html_url((*commit).clone(), oc_repos_api, repo_owner, repo_name).await;
     let commit_string = if let Some(commit_author) = result {
         format!(
-            "- {description} @{} [{}]({}/{repo_name}/commit/{})\n",
+            "{}{description} @{} [{}]({}/{repo_name}/commit/{})\n",
+            prepend_string,
             commit_author.login,
             &oid_string[..7],
             commit_author.html_url,
@@ -161,13 +164,14 @@ async fn process_commits(
 ) -> String {
     let mut output = String::new();
     let mut current_tag = None;
-
-    let mut skip_set: HashSet<String> = HashSet::new();
+    let mut pr_stack: Vec<String> = Vec::new();
 
     for commit in get_commits(repo) {
         let oid = commit.id();
         let oid_string = oid.to_string();
 
+        // If this commit is tagged, add a new section to the changelog
+        // with either the tag name or "unreleased" if there is no tag
         if let Some(tag) = tags.get(&oid) {
             output.push('\n');
             current_tag = Some(format!("[{}]", tag));
@@ -180,17 +184,24 @@ async fn process_commits(
         }
 
         if commit.parent_count() > 1 {
+            // This commit is a merge commit, fetch the PR metadata using octocrab
             if let Some(octocrab) = &octocrab {
+                // Get the metadata for the PR
                 let merge_commit_sha = commit.id().to_string();
                 let pull_request =
                     fetch_pr_metadata(octocrab, repo_owner, repo_name, &merge_commit_sha).await;
                 if let Some(pr) = pull_request {
                     let pr_url = pr.html_url.map(|url| url.to_string()).unwrap_or_default();
-                    let pr_description = pr.title.unwrap_or_else(|| "No description".to_string());
-                    output.push_str(&format!(
-                        "- PR [#{}]({}) {}\n",
-                        pr.number, pr_url, pr_description
-                    ));
+                    let pr_prepend_string = format!("- PR [#{}]({}) ", pr.number, pr_url);
+                    let commit = format_commit(
+                        &pr_prepend_string,
+                        &commit,
+                        oc_repos_api,
+                        repo_owner,
+                        repo_name,
+                    )
+                    .await;
+                    output.push_str(&commit);
 
                     let pr_commits = octocrab
                         .pulls(repo_owner, repo_name)
@@ -202,21 +213,46 @@ async fn process_commits(
                     // Reverse the pr_commits so latest commits are at the top
                     let pr_commits: Vec<_> = pr_commits.into_iter().rev().collect();
 
-                    // Output the PR commits
+                    // Push PR commits which will be processed in the next iteration of the outer commit loop
                     for pr_commit in pr_commits {
-                        // Add pr_commits to the skip_set so they are not repeated
-                        skip_set.insert(pr_commit.sha.to_string());
-
-                        // Add commit indented
-                        let message = pr_commit.commit.message;
-                        output.push_str(&format!("    - {}\n", description(message.as_str())));
+                        let commit_sha = pr_commit.sha.to_string();
+                        pr_stack.push(commit_sha);
                     }
+                } else {
+                    // Wierd this isn't a PR but it has multiple parents!
+                    let commit_string = format_commit(
+                        "- <WEIRD multi-parent commit not a PR> ",
+                        &commit,
+                        oc_repos_api,
+                        repo_owner,
+                        repo_name,
+                    )
+                    .await;
+                    output.push_str(&commit_string);
                 }
             }
-        } else if skip_set.contains(&oid_string) {
-            //println!("process_commits: skipping {}", oid);
+        } else if pr_stack.contains(&oid_string) {
+            // Indent these pr commits
+            let pr_indent_string = "  - ";
+            let pr_commit_sha = pr_stack.pop().unwrap();
+
+            // Check that the commit sha is the same as the pr_commit_sha
+            // This is a sanity check to make sure we are processing the commits in the correct order
+            assert!(pr_commit_sha == oid_string);
+
+            let commit_string = format_commit(
+                pr_indent_string,
+                &commit,
+                oc_repos_api,
+                repo_owner,
+                repo_name,
+            )
+            .await;
+            output.push_str(&commit_string);
         } else {
-            let commit_string = format_commit(&commit, oc_repos_api, repo_owner, repo_name).await;
+            // Regular commit
+            let commit_string =
+                format_commit("- ", &commit, oc_repos_api, repo_owner, repo_name).await;
             output.push_str(&commit_string);
         }
     }
