@@ -1,5 +1,6 @@
 [unreleased] - 2024-11-27
-feat: Update format_commit to use get_username_html_url
+- feat: Use format_commit for all commits @winksaville [b32a88c](https://github.com/winksaville/expr-changelog-generation/commit/b32a88c98ed9c5daa7cc78306753b8d227695bc7)
+- feat: Update format_commit to use get_username_html_url @winksaville [05266c2](https://github.com/winksaville/expr-changelog-generation/commit/05266c2983d6c87b1e3f8e311e5986e1b477f058)
 - feat: add get_author_html_url stub using octocrate @winksaville [95f5ade](https://github.com/winksaville/expr-changelog-generation/commit/95f5adebe899da45972a663a2b1cde278d2672d3)
 - feat: Add my custom_logger @winksaville [4d97b5b](https://github.com/winksaville/expr-changelog-generation/commit/4d97b5b031d318de250cc53140be967981ecc80c)
 - feat: Cleanup @winksaville [67fb1ab](https://github.com/winksaville/expr-changelog-generation/commit/67fb1ab846b258c82b6eae0dd8eedee8c2bd04b2)

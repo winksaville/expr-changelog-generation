@@ -4,7 +4,7 @@ use git2::{Commit, Oid, Repository};
 use octocrab::{models::pulls::PullRequest, Octocrab};
 use octocrate::{repos::GitHubReposAPI, APIConfig, PersonalAccessToken};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env::{self, args},
     io,
     path::{Path, PathBuf},
@@ -31,7 +31,11 @@ fn get_tags(repo: &Repository) -> HashMap<Oid, String> {
 fn get_commits(repo: &Repository) -> Vec<Commit> {
     let mut revwalk = repo.revwalk().expect("Failed to create revwalk");
     revwalk.push_head().expect("Failed to push HEAD");
-    revwalk.set_sorting(git2::Sort::TIME).unwrap();
+
+    // Sort commits by in topological order. This is different from the default,
+    // which is git2::Sort::NONE. With NONE the order is unspecified and may change
+    // according the comment for NONE in git2::Sort.
+    revwalk.set_sorting(git2::Sort::TOPOLOGICAL).unwrap();
 
     revwalk
         .filter_map(|oid| oid.ok().and_then(|oid| repo.find_commit(oid).ok()))
@@ -146,7 +150,7 @@ async fn format_commit<'a>(
             oid_string
         )
     } else {
-        format!("{}\n", description)
+        format!("{}{}\n", prepend_string, description)
     };
 
     log::debug!("format_commit:- commit_string: {commit_string}");
@@ -164,11 +168,13 @@ async fn process_commits(
 ) -> String {
     let mut output = String::new();
     let mut current_tag = None;
-    let mut pr_stack: Vec<String> = Vec::new();
+    let mut pr_queue: VecDeque<String> = VecDeque::new();
 
     for commit in get_commits(repo) {
         let oid = commit.id();
         let oid_string = oid.to_string();
+        let parent_count = commit.parent_count();
+        log::debug!("process_commits: TOL commit.id={oid_string} parent_count={parent_count}");
 
         // If this commit is tagged, add a new section to the changelog
         // with either the tag name or "unreleased" if there is no tag
@@ -183,7 +189,7 @@ async fn process_commits(
             output.push_str(&format!("{} - {}\n", current_tag.as_ref().unwrap(), date));
         }
 
-        if commit.parent_count() > 1 {
+        if parent_count > 1 {
             // This commit is a merge commit, fetch the PR metadata using octocrab
             if let Some(octocrab) = &octocrab {
                 // Get the metadata for the PR
@@ -214,9 +220,13 @@ async fn process_commits(
                     let pr_commits: Vec<_> = pr_commits.into_iter().rev().collect();
 
                     // Push PR commits which will be processed in the next iteration of the outer commit loop
-                    for pr_commit in pr_commits {
+                    log::debug!("process_commits: pr_commits.len()={}", pr_commits.len());
+                    for (idx, pr_commit) in pr_commits.into_iter().enumerate() {
                         let commit_sha = pr_commit.sha.to_string();
-                        pr_stack.push(commit_sha);
+                        log::debug!(
+                            "process_commits: push pr_queue[{idx}] pr_commit.sha={commit_sha}"
+                        );
+                        pr_queue.push_back(commit_sha);
                     }
                 } else {
                     // Wierd this isn't a PR but it has multiple parents!
@@ -231,17 +241,13 @@ async fn process_commits(
                     output.push_str(&commit_string);
                 }
             }
-        } else if pr_stack.contains(&oid_string) {
-            // Indent these pr commits
-            let pr_indent_string = "  - ";
-            let pr_commit_sha = pr_stack.pop().unwrap();
-
+        } else if pr_queue.contains(&oid_string) {
             // Check that the commit sha is the same as the pr_commit_sha
             // This is a sanity check to make sure we are processing the commits in the correct order
-            assert!(pr_commit_sha == oid_string);
+            assert!(pr_queue.pop_front().unwrap() == oid_string);
 
             let commit_string = format_commit(
-                pr_indent_string,
+                "  - ", // Indent these pr commits
                 &commit,
                 oc_repos_api,
                 repo_owner,
@@ -310,6 +316,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Open the repository and get the tags
     let repo = Repository::open(&repo_directory).expect("Failed to open repository");
     let tags = get_tags(&repo);
+
+    if log::Level::Info <= log::max_level() {
+        let commits = get_commits(&repo);
+        for commit in commits {
+            log::info!("{commit:?}");
+        }
+    }
 
     // Initialize the Octocrate repo API
     let pat_string = if let Ok(pat) = env::var("GITHUB_PERSONAL_ACCESS_TOKEN") {
