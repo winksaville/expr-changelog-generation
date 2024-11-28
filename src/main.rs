@@ -28,9 +28,11 @@ fn get_tags(repo: &Repository) -> HashMap<Oid, String> {
         .collect()
 }
 
-fn get_commits(repo: &Repository) -> Vec<Commit> {
+fn get_commits(repo: &Repository, oid: Oid) -> Vec<Commit> {
     let mut revwalk = repo.revwalk().expect("Failed to create revwalk");
-    revwalk.push_head().expect("Failed to push HEAD");
+    revwalk.push(oid).unwrap();
+    //.expect(format!("Failed to push oid: {oid}").as_str());
+    //revwalk.push_head().expect("Failed to push HEAD");
 
     // Sort commits by in topological order. This is different from the default,
     // which is git2::Sort::NONE. With NONE the order is unspecified and may change
@@ -142,9 +144,10 @@ async fn format_commit<'a>(
         get_username_html_url((*commit).clone(), oc_repos_api, repo_owner, repo_name).await;
     let commit_string = if let Some(commit_author) = result {
         format!(
-            "{}{description} @{} [{}]({}/{repo_name}/commit/{})\n",
+            "{}{description} [@{}]({}) -- [{}]({}/{repo_name}/commit/{})\n",
             prepend_string,
             commit_author.login,
+            commit_author.html_url,
             &oid_string[..7],
             commit_author.html_url,
             oid_string
@@ -165,12 +168,13 @@ async fn process_commits(
     octocrab: Option<Octocrab>,
     repo_owner: &str,
     repo_name: &str,
+    repo_commit_sha: Oid,
 ) -> String {
     let mut output = String::new();
     let mut current_tag = None;
     let mut pr_queue: VecDeque<String> = VecDeque::new();
 
-    for commit in get_commits(repo) {
+    for commit in get_commits(repo, repo_commit_sha) {
         let oid = commit.id();
         let oid_string = oid.to_string();
         let parent_count = commit.parent_count();
@@ -292,13 +296,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = args().collect();
 
     // Check if we have the correct number of args
-    if args.len() < 3 {
+    if args.len() < 4 {
         eprintln!(
-            "Usage: {} <repo_directory> <repo_owner> {{repo_name}}",
+            "Usage: {} <repo_directory> <repo_owner> <commit> {{repo_name}}",
             args[0]
         );
         eprintln!("   repo_directory: the directory where the local repo resides");
         eprintln!("   repo_owner: the github owner name");
+        eprintln!("   sha: the sha to use as HEAD");
         eprintln!("   repo_name: Optional repo_name, if absent use file_name of repo_directory");
         std::process::exit(1);
     }
@@ -306,7 +311,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize args
     let repo_directory = resolve_directory(&args[1]).unwrap();
     let repo_owner = &args[2];
-    let repo_name = if args.len() == 4 {
+    let repo_commit_sha = Oid::from_str(&args[3]).expect("Failed to parse sha");
+    let repo_name = if args.len() == 5 {
         &args[3]
     } else {
         // Get the filename of the repo_directory handling "." and ".."
@@ -318,7 +324,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tags = get_tags(&repo);
 
     if log::Level::Info <= log::max_level() {
-        let commits = get_commits(&repo);
+        let commits = get_commits(&repo, repo_commit_sha);
         for commit in commits {
             log::info!("{commit:?}");
         }
@@ -337,8 +343,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize the Octocrab and process the commits returning the changelog
     let octocrab = Octocrab::builder().build().ok();
-    let changelog =
-        process_commits(&repo, tags, &oc_repos_api, octocrab, repo_owner, repo_name).await;
+    let changelog = process_commits(
+        &repo,
+        tags,
+        &oc_repos_api,
+        octocrab,
+        repo_owner,
+        repo_name,
+        repo_commit_sha,
+    )
+    .await;
 
     println!("{}", changelog);
 
